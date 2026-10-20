@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Send,
   Paperclip,
@@ -13,10 +13,13 @@ import {
   X,
   Users,
   Smile,
+  LogOut,
+  LockKeyhole,
+  UserRound,
 } from "lucide-react";
 
 type User = {
-  id: number;
+  id: string;
   name: string;
   username: string;
   color: string;
@@ -24,39 +27,15 @@ type User = {
 };
 
 type Message = {
-  id: number;
-  senderId: number;
+  id: string;
+  senderId: string;
   text: string;
   time: string;
 };
 
-const currentUser: User = {
-  id: 0,
-  name: "مختار",
-  username: "mukhtar",
-  color: "#D9B879",
-  online: true,
-};
+type Session = { id: string; username: string };
+type ApiMessage = { id: string; senderId: string; text: string; createdAt: string };
 
-const initialUsers: User[] = [
-  { id: 1, name: "أحمد", username: "ahmed", color: "#7CA8E8", online: true },
-  { id: 2, name: "علي", username: "ali", color: "#B39BE8", online: false },
-  { id: 3, name: "محمد", username: "mohammed", color: "#8DC8A7", online: true },
-];
-
-const initialMessages: Record<number, Message[]> = {
-  1: [
-    { id: 1, senderId: 1, text: "هلا مختار، شلونك؟", time: "10:41" },
-    { id: 2, senderId: 0, text: "هلا بيك، تمام الحمدلله", time: "10:42" },
-    { id: 3, senderId: 1, text: "شنو أخبار المشروع الجديد؟", time: "10:43" },
-  ],
-  2: [
-    { id: 4, senderId: 2, text: "السلام عليكم 👋", time: "09:20" },
-  ],
-  3: [
-    { id: 5, senderId: 3, text: "نشوفك باچر إن شاء الله", time: "أمس" },
-  ],
-};
 
 function Avatar({ user, size = 44 }: { user: User; size?: number }) {
   return (
@@ -77,13 +56,135 @@ function Avatar({ user, size = 44 }: { user: User; size?: number }) {
 }
 
 export default function Home() {
-  const [users] = useState(initialUsers);
-  const [selectedId, setSelectedId] = useState<number | null>(1);
-  const [messages, setMessages] = useState(initialMessages);
+  const [users, setUsers] = useState<User[]>([]);
+  const [account, setAccount] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [showUsers, setShowUsers] = useState(false);
   const [mobileChat, setMobileChat] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const currentUser: User = {
+    id: account?.id ?? "",
+    name: account?.username ?? "مستخدم",
+    username: account?.username ?? "user",
+    color: "#D9B879",
+    online: true,
+  };
+
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("session lookup failed");
+        return response.json() as Promise<{ user: Session | null }>;
+      })
+      .then(({ user }) => setAccount(user))
+      .catch((error) => {
+        console.error("تعذّر استعادة جلسة الدخول:", error);
+        setAuthError("تعذّر الاتصال بالخادم. تأكد من إعداد قاعدة البيانات وحاول مرة ثانية.");
+      })
+      .finally(() => setAuthReady(true));
+  }, []);
+
+  async function submitCredentials(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const username = authUsername.trim().toLowerCase();
+    const password = authPassword;
+    if (username.length < 3 || password.length < 10) {
+      setAuthError("اسم المستخدم 3 أحرف على الأقل، وكلمة المرور 10 أحرف على الأقل.");
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const response = await fetch(`/api/auth/${authMode === "register" ? "register" : "login"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const result = await response.json() as { user?: Session; error?: string };
+      if (!response.ok || !result.user) {
+        setAuthError(result.error ?? "ما قدرنا نسجل دخولك. حاول مرة ثانية.");
+        return;
+      }
+      setAccount(result.user);
+      setAuthPassword("");
+    } catch (error) {
+      console.error("تعذّر تسجيل الدخول:", error);
+      setAuthError("ما قدرنا نتصل بالخادم. حاول مرة ثانية.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setAccount(null);
+    setUsers([]);
+    setSelectedId(null);
+    setMessages({});
+    setAuthPassword("");
+  }
+
+  useEffect(() => {
+    if (!account) return;
+    let cancelled = false;
+    fetch("/api/users", { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json() as { users?: { id: string; username: string }[]; error?: string };
+        if (!response.ok) throw new Error(result.error ?? "تعذّر تحميل الحسابات.");
+        return result.users ?? [];
+      })
+      .then((items) => {
+        if (cancelled) return;
+        const colors = ["#7CA8E8", "#B39BE8", "#8DC8A7", "#E8A67C", "#D88CB0"];
+        const nextUsers = items.map((item, index) => ({ id: item.id, username: item.username, name: item.username, color: colors[index % colors.length], online: false }));
+        setUsers(nextUsers);
+        setSelectedId((previous) => previous && nextUsers.some((user) => user.id === previous) ? previous : nextUsers[0]?.id ?? null);
+      })
+      .catch((error) => {
+        console.error("تعذّر تحميل المستخدمين:", error);
+        if (!cancelled) setAuthError("تعذّر تحميل الحسابات من قاعدة البيانات.");
+      });
+    return () => { cancelled = true; };
+  }, [account]);
+
+  useEffect(() => {
+    if (!selectedId || !account) return;
+    let cancelled = false;
+    const loadMessages = async () => {
+      try {
+        const response = await fetch(`/api/messages?with=${encodeURIComponent(selectedId)}`, { cache: "no-store" });
+        const result = await response.json() as { messages?: ApiMessage[] };
+        if (!response.ok) throw new Error("تعذّر تحميل الرسائل.");
+        if (cancelled) return;
+        const conversation = (result.messages ?? []).map((message) => ({
+          id: message.id,
+          senderId: message.senderId,
+          text: message.text,
+          time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+        }));
+        setMessages((previous) => ({ ...previous, [selectedId]: conversation }));
+      } catch (error) {
+        console.error("تعذّر تحميل الرسائل:", error);
+      }
+    };
+    void loadMessages();
+    const interval = window.setInterval(() => void loadMessages(), 5000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [selectedId, account]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [selectedId, messages]);
 
   const selectedUser = users.find((u) => u.id === selectedId);
 
@@ -104,49 +205,39 @@ export default function Home() {
     setQuery("");
   }
 
-  function sendMessage() {
-    const text = draft.trim();
-    if (!text || selectedId === null) return;
-
-    const now = new Date().toLocaleTimeString("ar-IQ", {
-      hour: "2-digit",
-      minute: "2-digit",
+  async function sendTextMessage(text: string) {
+    const cleanText = text.trim();
+    if (!cleanText || !selectedId) return;
+    const response = await fetch("/api/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipientId: selectedId, text: cleanText }),
     });
+    const result = await response.json() as { message?: ApiMessage; error?: string };
+    if (!response.ok || !result.message) {
+      setAuthError(result.error ?? "تعذّر إرسال الرسالة.");
+      return;
+    }
+    const message = result.message;
+    const saved: Message = {
+      id: message.id,
+      senderId: message.senderId,
+      text: message.text,
+      time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+    };
+    setMessages((previous) => ({ ...previous, [selectedId]: [...(previous[selectedId] ?? []), saved] }));
+  }
 
-    setMessages((previous) => ({
-      ...previous,
-      [selectedId]: [
-        ...(previous[selectedId] ?? []),
-        {
-          id: Date.now(),
-          senderId: currentUser.id,
-          text,
-          time: now,
-        },
-      ],
-    }));
-
+  async function sendMessage() {
+    const text = draft.trim();
+    if (!text || !selectedId) return;
+    await sendTextMessage(text);
     setDraft("");
   }
 
   function handleAttachment(file?: File) {
-    if (!file || selectedId === null) return;
-
-    setMessages((previous) => ({
-      ...previous,
-      [selectedId]: [
-        ...(previous[selectedId] ?? []),
-        {
-          id: Date.now(),
-          senderId: currentUser.id,
-          text: `📎 ${file.name} — ${formatSize(file.size)}`,
-          time: new Date().toLocaleTimeString("ar-IQ", {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        },
-      ],
-    }));
+    if (!file || !selectedId) return;
+    void sendTextMessage(`📎 ${file.name} — ${formatSize(file.size)}`);
   }
 
   function formatSize(size: number) {
@@ -156,6 +247,35 @@ export default function Home() {
   }
 
   return (
+    <>
+    {(!authReady || !account) && (
+      <div className="auth-overlay" dir="rtl">
+        {!authReady ? (
+          <div className="auth-loading"><MessageCircle size={26} /> جاري التحميل...</div>
+        ) : (
+          <section className="auth-card" aria-labelledby="auth-title">
+            <div className="auth-mark"><MessageCircle size={25} /></div>
+            <p className="auth-eyebrow">مساحتك الخاصة للكلام</p>
+            <h1 id="auth-title">{authMode === "login" ? "هلا بعودتك" : "خلّينا نتعارف"}</h1>
+            <p className="auth-description">{authMode === "login" ? "سجّل دخولك وكمل أحاديثك." : "أنشئ حسابك وابدأ محادثتك الأولى."}</p>
+            <form className="auth-form" onSubmit={submitCredentials}>
+              <label className="auth-field">
+                <span>اسم المستخدم</span>
+                <span className="auth-input-wrap"><UserRound size={18} /><input autoComplete="username" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="مثال: mukhtar" required minLength={3} /></span>
+              </label>
+              <label className="auth-field">
+                <span>كلمة المرور</span>
+                <span className="auth-input-wrap"><LockKeyhole size={18} /><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="10 أحرف على الأقل" required minLength={10} /></span>
+              </label>
+              {authError && <p className="auth-error" role="alert">{authError}</p>}
+              <button className="auth-submit" type="submit" disabled={authBusy}>{authBusy ? "لحظة..." : authMode === "login" ? "دخول" : "إنشاء الحساب"}<ArrowRight size={18} /></button>
+            </form>
+            <button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "ما عندك حساب؟ أنشئ حساب جديد" : "عندك حساب؟ سجّل دخولك"}</button>
+            <p className="auth-local-note">حسابك وجلسة الدخول محميان عبر الخادم.</p>
+          </section>
+        )}
+      </div>
+    )}
     <main className="app-shell" dir="rtl">
       <header className="topbar">
         <div className="brand">
@@ -174,8 +294,8 @@ export default function Home() {
             <strong>{currentUser.name}</strong>
             <span>@{currentUser.username}</span>
           </div>
-          <button className="icon-button" aria-label="خيارات الحساب">
-            <MoreVertical size={20} />
+          <button className="icon-button" onClick={signOut} aria-label="تسجيل الخروج" title="تسجيل الخروج">
+            <LogOut size={19} />
           </button>
         </div>
       </header>
@@ -251,7 +371,7 @@ export default function Home() {
                       </div>
                       <div className="conversation-bottom">
                         <span>{last?.text ?? "ابدأ المحادثة الآن"}</span>
-                        {last?.senderId === 0 && (
+                        {last?.senderId === currentUser.id && (
                           <CheckCheck size={15} className="read-icon" />
                         )}
                       </div>
@@ -263,7 +383,7 @@ export default function Home() {
 
           <div className="sidebar-footer">
             <span className="footer-dot" />
-            واجهة تجريبية · غير متصل بالخادم
+            رسائلك محفوظة بأمان على Neon
           </div>
         </aside>
 
@@ -319,6 +439,7 @@ export default function Home() {
                       </div>
                     );
                   })}
+                  <div ref={messagesEndRef} />
                   {(messages[selectedUser.id] ?? []).length === 0 && (
                     <div className="empty-messages">
                       <div className="empty-icon">
@@ -457,6 +578,7 @@ export default function Home() {
         </div>
       )}
 
+    </main>
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;450;500;550;600;650;700&display=swap');
 
@@ -486,6 +608,31 @@ export default function Home() {
           outline: 2px solid var(--gold);
           outline-offset: 3px;
         }
+
+        .auth-overlay {
+          position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+          overflow-y: auto; padding: 24px; background: radial-gradient(ellipse at 50% 0%, #29251c 0%, #11120f 52%);
+        }
+        .auth-card {
+          width: min(100%, 430px); padding: 36px; border: 1px solid #34342c;
+          border-radius: 24px; background: #191a16; box-shadow: 0 28px 100px #0008;
+        }
+        .auth-mark { width: 54px; height: 54px; display: grid; place-items: center; margin-bottom: 23px; border-radius: 17px; background: var(--gold); color: #191811; }
+        .auth-eyebrow { margin: 0 0 8px; color: var(--gold); font-size: 11px; }
+        .auth-card h1 { margin: 0; font-size: 26px; }
+        .auth-description { margin: 8px 0 25px; color: var(--muted); font-size: 13px; }
+        .auth-form { display: flex; flex-direction: column; gap: 17px; }
+        .auth-field { display: flex; flex-direction: column; gap: 8px; color: #d4d0c5; font-size: 12px; }
+        .auth-input-wrap { min-height: 52px; display: flex; align-items: center; gap: 11px; padding: 0 14px; border: 1px solid #36372f; border-radius: 13px; background: #20211c; color: var(--muted); }
+        .auth-input-wrap:focus-within { border-color: var(--gold-dark); }
+        .auth-input-wrap input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
+        .auth-input-wrap input::placeholder { color: #77776e; }
+        .auth-submit { min-height: 51px; display: flex; align-items: center; justify-content: center; gap: 9px; margin-top: 3px; border: 0; border-radius: 13px; background: var(--gold); color: #191811; font-weight: 700; }
+        .auth-submit:disabled { opacity: .65; cursor: wait; }
+        .auth-error { margin: -3px 0 0; color: #f19a92; font-size: 12px; line-height: 1.7; }
+        .auth-switch { width: 100%; margin-top: 20px; padding: 8px; border: 0; background: transparent; color: var(--gold); font-size: 12px; }
+        .auth-local-note { margin: 14px 0 0; color: #77776e; text-align: center; font-size: 10px; }
+        .auth-loading { display: flex; align-items: center; gap: 12px; color: var(--gold); font-size: 14px; }
 
         .app-shell {
           height: 100dvh;
@@ -745,6 +892,7 @@ export default function Home() {
         }
 
         @media (max-width: 760px) {
+          .auth-card { padding: 28px 23px; }
           .app-shell { padding: 0 0 0; height: 100dvh; min-height: 0; }
           .topbar { height: 70px; min-height: 70px; padding: 0 16px; }
           .brand-icon { width: 38px; height: 38px; border-radius: 12px; }
@@ -783,6 +931,6 @@ export default function Home() {
           *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
         }
       `}</style>
-    </main>
+    </>
   );
 }
