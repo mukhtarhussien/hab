@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const user = await authenticatedUser();
     if (!user) return NextResponse.json({ error: "سجّل دخولك أولاً." }, { status: 401 });
     const recipientId = new URL(request.url).searchParams.get("with");
-    if (!recipientId || !/^\d+$/.test(recipientId)) return NextResponse.json({ error: "المحادثة المطلوبة غير صالحة." }, { status: 400 });
+    if (!recipientId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(recipientId)) return NextResponse.json({ error: "المحادثة المطلوبة غير صالحة." }, { status: 400 });
     await ensureSchema();
     const messages = await getSql()`SELECT id::text AS id, sender_id::text AS "senderId", recipient_id::text AS "recipientId", body AS text, created_at AS "createdAt"
       FROM messages WHERE (sender_id = ${user.id} AND recipient_id = ${recipientId})
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     if (!user) return NextResponse.json({ error: "سجّل دخولك أولاً." }, { status: 401 });
     const { recipientId, text: rawText } = await request.json();
     const text = typeof rawText === "string" ? rawText.trim() : "";
-    if (!/^\d+$/.test(String(recipientId ?? "")) || String(recipientId) === String(user.id) || !text || text.length > 10000) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(recipientId ?? "")) || String(recipientId) === String(user.id) || !text || text.length > 10000) {
       return NextResponse.json({ error: "الرسالة أو المستلم غير صالح." }, { status: 400 });
     }
     await ensureSchema();
