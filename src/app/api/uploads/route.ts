@@ -5,7 +5,6 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getSession, SESSION_COOKIE } from "@/lib/auth-server";
 
-export const runtime = "nodejs";
 
 const MAX_SIZE = 5 * 1024 * 1024;
 const TYPES = new Set([
