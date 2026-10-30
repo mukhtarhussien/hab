@@ -31,11 +31,31 @@ type Message = {
   senderId: string;
   text: string;
   time: string;
+  attachmentUrl?: string | null;
+  attachmentType?: string | null;
+  attachmentName?: string | null;
 };
 
 type Session = { id: string; username: string };
-type ApiMessage = { id: string; senderId: string; text: string; createdAt: string };
 
+type ApiMessage = {
+  id: string;
+  senderId: string;
+  text: string;
+  createdAt: string;
+  attachmentUrl?: string | null;
+  attachmentType?: string | null;
+  attachmentName?: string | null;
+  attachmentSize?: number | string | null;
+};
+
+type UploadResponse = {
+  url?: string;
+  contentType?: string;
+  name?: string;
+  size?: number;
+  error?: string;
+};
 
 function Avatar({ user, size = 44 }: { user: User; size?: number }) {
   return (
@@ -63,7 +83,9 @@ export default function Home() {
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [chatError, setChatError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [draft, setDraft] = useState("");
@@ -88,7 +110,9 @@ export default function Home() {
       .then(({ user }) => setAccount(user))
       .catch((error) => {
         console.error("تعذّر استعادة جلسة الدخول:", error);
-        setAuthError("تعذّر الاتصال بالخادم. تأكد من إعداد قاعدة البيانات وحاول مرة ثانية.");
+        setAuthError(
+          "تعذّر الاتصال بالخادم. تأكد من إعداد قاعدة البيانات وحاول مرة ثانية."
+        );
       })
       .finally(() => setAuthReady(true));
   }, []);
@@ -97,24 +121,38 @@ export default function Home() {
     event.preventDefault();
     const username = authUsername.trim().toLowerCase();
     const password = authPassword;
+
     if (username.length < 3 || password.length < 10) {
-      setAuthError("اسم المستخدم 3 أحرف على الأقل، وكلمة المرور 10 أحرف على الأقل.");
+      setAuthError(
+        "اسم المستخدم 3 أحرف على الأقل، وكلمة المرور 10 أحرف على الأقل."
+      );
       return;
     }
 
     setAuthBusy(true);
     setAuthError("");
+
     try {
-      const response = await fetch(`/api/auth/${authMode === "register" ? "register" : "login"}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-      const result = await response.json() as { user?: Session; error?: string };
+      const response = await fetch(
+        `/api/auth/${authMode === "register" ? "register" : "login"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        }
+      );
+      const result = (await response.json()) as {
+        user?: Session;
+        error?: string;
+      };
+
       if (!response.ok || !result.user) {
-        setAuthError(result.error ?? "ما قدرنا نسجل دخولك. حاول مرة ثانية.");
+        setAuthError(
+          result.error ?? "ما قدرنا نسجل دخولك. حاول مرة ثانية."
+        );
         return;
       }
+
       setAccount(result.user);
       setAuthPassword("");
     } catch (error) {
@@ -126,74 +164,138 @@ export default function Home() {
   }
 
   async function signOut() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setAccount(null);
-    setUsers([]);
-    setSelectedId(null);
-    setMessages({});
-    setAuthPassword("");
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      setAccount(null);
+      setUsers([]);
+      setSelectedId(null);
+      setMessages({});
+      setAuthPassword("");
+      setChatError("");
+    }
   }
 
   useEffect(() => {
     if (!account) return;
     let cancelled = false;
+
     fetch("/api/users", { cache: "no-store" })
       .then(async (response) => {
-        const result = await response.json() as { users?: { id: string; username: string }[]; error?: string };
-        if (!response.ok) throw new Error(result.error ?? "تعذّر تحميل الحسابات.");
+        const result = (await response.json()) as {
+          users?: { id: string; username: string }[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(result.error ?? "تعذّر تحميل الحسابات.");
+        }
         return result.users ?? [];
       })
       .then((items) => {
         if (cancelled) return;
-        const colors = ["#7CA8E8", "#B39BE8", "#8DC8A7", "#E8A67C", "#D88CB0"];
-        const nextUsers = items.map((item, index) => ({ id: item.id, username: item.username, name: item.username, color: colors[index % colors.length], online: false }));
+        const colors = [
+          "#7CA8E8",
+          "#B39BE8",
+          "#8DC8A7",
+          "#E8A67C",
+          "#D88CB0",
+        ];
+        const nextUsers = items
+          .filter((item) => item.id !== account.id)
+          .map((item, index) => ({
+            id: item.id,
+            username: item.username,
+            name: item.username,
+            color: colors[index % colors.length],
+            online: false,
+          }));
+
         setUsers(nextUsers);
-        setSelectedId((previous) => previous && nextUsers.some((user) => user.id === previous) ? previous : nextUsers[0]?.id ?? null);
+        setSelectedId((previous) =>
+          previous && nextUsers.some((user) => user.id === previous)
+            ? previous
+            : nextUsers[0]?.id ?? null
+        );
       })
       .catch((error) => {
         console.error("تعذّر تحميل المستخدمين:", error);
-        if (!cancelled) setAuthError("تعذّر تحميل الحسابات من قاعدة البيانات.");
+        if (!cancelled) {
+          setChatError("تعذّر تحميل الحسابات من قاعدة البيانات.");
+        }
       });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, [account]);
 
   useEffect(() => {
     if (!selectedId || !account) return;
     let cancelled = false;
+
     const loadMessages = async () => {
       try {
-        const response = await fetch(`/api/messages?with=${encodeURIComponent(selectedId)}`, { cache: "no-store" });
-        const result = await response.json() as { messages?: ApiMessage[] };
-        if (!response.ok) throw new Error("تعذّر تحميل الرسائل.");
+        const response = await fetch(
+          `/api/messages?with=${encodeURIComponent(selectedId)}`,
+          { cache: "no-store" }
+        );
+        const result = (await response.json()) as {
+          messages?: ApiMessage[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(result.error ?? "تعذّر تحميل الرسائل.");
+        }
         if (cancelled) return;
-        const conversation = (result.messages ?? []).map((message) => ({
-          id: message.id,
-          senderId: message.senderId,
-          text: message.text,
-          time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+
+        const conversation: Message[] = (result.messages ?? []).map(
+          (message) => ({
+            id: message.id,
+            senderId: message.senderId,
+            text: message.text ?? "",
+            attachmentUrl: message.attachmentUrl,
+            attachmentType: message.attachmentType,
+            attachmentName: message.attachmentName,
+            time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          })
+        );
+
+        setMessages((previous) => ({
+          ...previous,
+          [selectedId]: conversation,
         }));
-        setMessages((previous) => ({ ...previous, [selectedId]: conversation }));
       } catch (error) {
         console.error("تعذّر تحميل الرسائل:", error);
       }
     };
+
     void loadMessages();
     const interval = window.setInterval(() => void loadMessages(), 5000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [selectedId, account]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    messagesEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
   }, [selectedId, messages]);
 
-  const selectedUser = users.find((u) => u.id === selectedId);
+  const selectedUser = users.find((user) => user.id === selectedId);
 
   const filteredUsers = useMemo(
     () =>
       users.filter(
-        (u) =>
-          u.name.includes(query.trim()) ||
-          u.username.toLowerCase().includes(query.trim().toLowerCase())
+        (user) =>
+          user.name.includes(query.trim()) ||
+          user.username.toLowerCase().includes(query.trim().toLowerCase())
       ),
     [users, query]
   );
@@ -203,29 +305,53 @@ export default function Home() {
     setShowUsers(false);
     setMobileChat(true);
     setQuery("");
+    setChatError("");
   }
 
   async function sendTextMessage(text: string) {
     const cleanText = text.trim();
-    if (!cleanText || !selectedId) return;
-    const response = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recipientId: selectedId, text: cleanText }),
-    });
-    const result = await response.json() as { message?: ApiMessage; error?: string };
-    if (!response.ok || !result.message) {
-      setAuthError(result.error ?? "تعذّر إرسال الرسالة.");
-      return;
+    const recipientId = selectedId;
+    if (!cleanText || !recipientId) return;
+
+    try {
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipientId, text: cleanText }),
+      });
+      const result = (await response.json()) as {
+        message?: ApiMessage;
+        error?: string;
+      };
+
+      if (!response.ok || !result.message) {
+        setChatError(result.error ?? "تعذّر إرسال الرسالة.");
+        return;
+      }
+
+      const message = result.message;
+      const saved: Message = {
+        id: message.id,
+        senderId: message.senderId,
+        text: message.text ?? cleanText,
+        attachmentUrl: message.attachmentUrl,
+        attachmentType: message.attachmentType,
+        attachmentName: message.attachmentName,
+        time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      };
+
+      setChatError("");
+      setMessages((previous) => ({
+        ...previous,
+        [recipientId]: [...(previous[recipientId] ?? []), saved],
+      }));
+    } catch (error) {
+      console.error("تعذّر إرسال الرسالة:", error);
+      setChatError("تعذّر الاتصال بالخادم لإرسال الرسالة.");
     }
-    const message = result.message;
-    const saved: Message = {
-      id: message.id,
-      senderId: message.senderId,
-      text: message.text,
-      time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
-    };
-    setMessages((previous) => ({ ...previous, [selectedId]: [...(previous[selectedId] ?? []), saved] }));
   }
 
   async function sendMessage() {
@@ -235,350 +361,557 @@ export default function Home() {
     setDraft("");
   }
 
-  function handleAttachment(file?: File) {
-    if (!file || !selectedId) return;
-    void sendTextMessage(`📎 ${file.name} — ${formatSize(file.size)}`);
-  }
+  async function handleAttachment(file?: File) {
+    if (!file || !selectedId || attachmentBusy) return;
 
-  function formatSize(size: number) {
-    return size < 1024 * 1024
-      ? `${Math.max(1, Math.round(size / 1024))} KB`
-      : `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    const recipientId = selectedId;
+    const allowedTypes = new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+    ]);
+
+    if (!allowedTypes.has(file.type)) {
+      setChatError("اختر صورة JPG أو PNG أو WebP أو GIF.");
+      return;
+    }
+
+    if (file.size === 0 || file.size > 5 * 1024 * 1024) {
+      setChatError("الحد الأقصى لحجم الصورة هو 5 MB.");
+      return;
+    }
+
+    setAttachmentBusy(true);
+    setChatError("");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const uploadResponse = await fetch("/api/uploads", {
+        method: "POST",
+        body: formData,
+      });
+      const uploaded = (await uploadResponse.json()) as UploadResponse;
+
+      if (!uploadResponse.ok || !uploaded.url) {
+        setChatError(uploaded.error ?? "فشل رفع الصورة.");
+        return;
+      }
+
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipientId,
+          text: "",
+          attachmentUrl: uploaded.url,
+          attachmentType: uploaded.contentType ?? file.type,
+          attachmentName: uploaded.name ?? file.name,
+          attachmentSize: uploaded.size ?? file.size,
+        }),
+      });
+
+      const result = (await response.json()) as {
+        message?: ApiMessage;
+        error?: string;
+      };
+
+      if (!response.ok || !result.message) {
+        setChatError(result.error ?? "تم رفع الصورة لكن تعذّر إرسالها.");
+        return;
+      }
+
+      const message = result.message;
+      const saved: Message = {
+        id: message.id,
+        senderId: message.senderId,
+        text: message.text ?? "",
+        attachmentUrl: message.attachmentUrl ?? uploaded.url,
+        attachmentType:
+          message.attachmentType ?? uploaded.contentType ?? file.type,
+        attachmentName:
+          message.attachmentName ?? uploaded.name ?? file.name,
+        time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      };
+
+      setMessages((previous) => ({
+        ...previous,
+        [recipientId]: [...(previous[recipientId] ?? []), saved],
+      }));
+      setChatError("");
+    } catch (error) {
+      console.error("فشل رفع الصورة أو إرسالها:", error);
+      setChatError("تعذّر رفع الصورة أو إرسالها. حاول مرة ثانية.");
+    } finally {
+      setAttachmentBusy(false);
+    }
   }
 
   return (
     <>
-    {(!authReady || !account) && (
-      <div className="auth-overlay" dir="rtl">
-        {!authReady ? (
-          <div className="auth-loading"><MessageCircle size={26} /> جاري التحميل...</div>
-        ) : (
-          <section className="auth-card" aria-labelledby="auth-title">
-            <div className="auth-mark"><MessageCircle size={25} /></div>
-            <p className="auth-eyebrow">مساحتك الخاصة للكلام</p>
-            <h1 id="auth-title">{authMode === "login" ? "هلا بعودتك" : "خلّينا نتعارف"}</h1>
-            <p className="auth-description">{authMode === "login" ? "سجّل دخولك وكمل أحاديثك." : "أنشئ حسابك وابدأ محادثتك الأولى."}</p>
-            <form className="auth-form" onSubmit={submitCredentials}>
-              <label className="auth-field">
-                <span>اسم المستخدم</span>
-                <span className="auth-input-wrap"><UserRound size={18} /><input autoComplete="username" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="مثال: mukhtar" required minLength={3} /></span>
-              </label>
-              <label className="auth-field">
-                <span>كلمة المرور</span>
-                <span className="auth-input-wrap"><LockKeyhole size={18} /><input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="10 أحرف على الأقل" required minLength={10} /></span>
-              </label>
-              {authError && <p className="auth-error" role="alert">{authError}</p>}
-              <button className="auth-submit" type="submit" disabled={authBusy}>{authBusy ? "لحظة..." : authMode === "login" ? "دخول" : "إنشاء الحساب"}<ArrowRight size={18} /></button>
-            </form>
-            <button className="auth-switch" type="button" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "ما عندك حساب؟ أنشئ حساب جديد" : "عندك حساب؟ سجّل دخولك"}</button>
-            <p className="auth-local-note">حسابك وجلسة الدخول محميان عبر الخادم.</p>
-          </section>
-        )}
-      </div>
-    )}
-    <main className="app-shell" dir="rtl">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-icon">
-            <MessageCircle size={22} />
-          </div>
-          <div>
-            <h1>habeeb<span>.</span></h1>
-            <p>مساحتك الخاصة للكلام</p>
-          </div>
-        </div>
-
-        <div className="profile">
-          <Avatar user={currentUser} size={39} />
-          <div className="profile-info">
-            <strong>{currentUser.name}</strong>
-            <span>@{currentUser.username}</span>
-          </div>
-          <button className="icon-button" onClick={signOut} aria-label="تسجيل الخروج" title="تسجيل الخروج">
-            <LogOut size={19} />
-          </button>
-        </div>
-      </header>
-
-      <section className="workspace">
-        <aside className={`sidebar ${mobileChat ? "mobile-hidden" : ""}`}>
-          <div className="sidebar-heading">
-            <div>
-              <h2>رسائلك</h2>
-              <p>مكان يجمع أحاديثك</p>
+      {(!authReady || !account) && (
+        <div className="auth-overlay" dir="rtl">
+          {!authReady ? (
+            <div className="auth-loading">
+              <MessageCircle size={26} /> جاري التحميل...
             </div>
-            <button
-              className="new-chat-button"
-              onClick={() => setShowUsers(true)}
-              aria-label="ابدأ محادثة جديدة"
-              title="محادثة جديدة"
-            >
-              <Plus size={21} />
-            </button>
-          </div>
-
-          <button
-            className="start-chat"
-            onClick={() => setShowUsers(true)}
-          >
-            <Users size={18} />
-            <span>ابدأ محادثة مع...</span>
-            <ArrowRight className="start-arrow" size={17} />
-          </button>
-
-          <label className="search-box">
-            <Search size={18} />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="ابحث عن محادثة..."
-              aria-label="البحث عن محادثة"
-            />
-            {query && (
-              <button onClick={() => setQuery("")} aria-label="مسح البحث">
-                <X size={15} />
-              </button>
-            )}
-          </label>
-
-          <div className="list-label">المحادثات الأخيرة</div>
-
-          <div className="conversation-list">
-            {users
-              .filter((u) => {
-                const last = messages[u.id]?.at(-1)?.text ?? "";
-                return (
-                  u.name.includes(query) ||
-                  u.username.includes(query.toLowerCase()) ||
-                  last.includes(query)
-                );
-              })
-              .map((user) => {
-                const last = messages[user.id]?.at(-1);
-                return (
-                  <button
-                    key={user.id}
-                    className={`conversation-item ${
-                      selectedId === user.id ? "active" : ""
-                    }`}
-                    onClick={() => openChat(user)}
-                  >
-                    <Avatar user={user} />
-                    <div className="conversation-details">
-                      <div className="conversation-top">
-                        <strong>{user.name}</strong>
-                        <time>{last?.time ?? ""}</time>
-                      </div>
-                      <div className="conversation-bottom">
-                        <span>{last?.text ?? "ابدأ المحادثة الآن"}</span>
-                        {last?.senderId === currentUser.id && (
-                          <CheckCheck size={15} className="read-icon" />
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-          </div>
-
-          <div className="sidebar-footer">
-            <span className="footer-dot" />
-            رسائلك محفوظة بأمان على Neon
-          </div>
-        </aside>
-
-        <section className={`chat-panel ${mobileChat ? "mobile-visible" : ""}`}>
-          {selectedUser ? (
-            <>
-              <header className="chat-header">
-                <button
-                  className="icon-button back-button"
-                  onClick={() => setMobileChat(false)}
-                  aria-label="العودة للمحادثات"
-                >
-                  <ArrowRight size={21} />
-                </button>
-                <Avatar user={selectedUser} size={43} />
-                <div className="chat-person">
-                  <strong>{selectedUser.name}</strong>
-                  <span>
-                    <i className={selectedUser.online ? "status-online" : "status-offline"} />
-                    {selectedUser.online ? "متصل الآن" : "غير متصل"}
-                  </span>
-                </div>
-                <div className="chat-actions">
-                  <button
-                    className="icon-button"
-                    aria-label="خيارات المحادثة"
-                  >
-                    <MoreVertical size={21} />
-                  </button>
-                </div>
-              </header>
-
-              <div className="messages-area">
-                <div className="date-divider">
-                  <span>بداية المحادثة</span>
-                </div>
-
-                <div className="messages">
-                  {(messages[selectedUser.id] ?? []).map((message) => {
-                    const mine = message.senderId === currentUser.id;
-                    return (
-                      <div
-                        key={message.id}
-                        className={`message-row ${mine ? "mine" : "theirs"}`}
-                      >
-                        <div className={`message-bubble ${mine ? "mine-bubble" : ""}`}>
-                          <p>{message.text}</p>
-                          <div className="message-meta">
-                            <time>{message.time}</time>
-                            {mine && <CheckCheck size={14} />}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div ref={messagesEndRef} />
-                  {(messages[selectedUser.id] ?? []).length === 0 && (
-                    <div className="empty-messages">
-                      <div className="empty-icon">
-                        <MessageCircle size={27} />
-                      </div>
-                      <h3>بداية حكاية جديدة</h3>
-                      <p>أرسل أول رسالة إلى {selectedUser.name}.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <footer className="composer-area">
-                <form
-                  className="composer"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    sendMessage();
-                  }}
-                >
-                  <label className="attachment-button" title="إرفاق ملف">
-                    <Paperclip size={21} />
-                    <input
-                      type="file"
-                      hidden
-                      onChange={(e) => {
-                        handleAttachment(e.target.files?.[0]);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-
-                  <input
-                    className="message-input"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="اكتب رسالتك هنا..."
-                    aria-label="نص الرسالة"
-                  />
-
-                  <button
-                    type="button"
-                    className="icon-button emoji-button"
-                    title="الرموز التعبيرية"
-                    onClick={() => setDraft((value) => value + " 😊")}
-                  >
-                    <Smile size={21} />
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="send-button"
-                    disabled={!draft.trim()}
-                    aria-label="إرسال الرسالة"
-                  >
-                    <Send size={19} />
-                  </button>
-                </form>
-                <p className="composer-note">مساحة للكلام، بلا تعقيد.</p>
-              </footer>
-            </>
           ) : (
-            <div className="empty-chat">
-              <MessageCircle size={45} />
-              <h2>ابدأ محادثتك الأولى</h2>
-              <p>اختر شخصاً من القائمة حتى تبدأ المراسلة.</p>
-              <button className="start-chat" onClick={() => setShowUsers(true)}>
-                <Plus size={18} /> ابدأ محادثة
-              </button>
-            </div>
-          )}
-        </section>
-      </section>
-
-      {showUsers && (
-        <div className="modal-overlay" onClick={() => setShowUsers(false)}>
-          <section
-            className="users-modal"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-title"
-          >
-            <header className="modal-header">
-              <div>
-                <h2 id="modal-title">ابدأ محادثة مع...</h2>
-                <p>اختار الشخص اللي تريد تحچي وياه</p>
+            <section className="auth-card" aria-labelledby="auth-title">
+              <div className="auth-mark">
+                <MessageCircle size={25} />
               </div>
+              <p className="auth-eyebrow">مساحتك الخاصة للكلام</p>
+              <h1 id="auth-title">
+                {authMode === "login" ? "هلا بعودتك" : "خلّينا نتعارف"}
+              </h1>
+              <p className="auth-description">
+                {authMode === "login"
+                  ? "سجّل دخولك وكمل أحاديثك."
+                  : "أنشئ حسابك وابدأ محادثتك الأولى."}
+              </p>
+              <form className="auth-form" onSubmit={submitCredentials}>
+                <label className="auth-field">
+                  <span>اسم المستخدم</span>
+                  <span className="auth-input-wrap">
+                    <UserRound size={18} />
+                    <input
+                      autoComplete="username"
+                      value={authUsername}
+                      onChange={(event) => setAuthUsername(event.target.value)}
+                      placeholder="مثال: mukhtar"
+                      required
+                      minLength={3}
+                    />
+                  </span>
+                </label>
+                <label className="auth-field">
+                  <span>كلمة المرور</span>
+                  <span className="auth-input-wrap">
+                    <LockKeyhole size={18} />
+                    <input
+                      type="password"
+                      autoComplete={
+                        authMode === "login"
+                          ? "current-password"
+                          : "new-password"
+                      }
+                      value={authPassword}
+                      onChange={(event) => setAuthPassword(event.target.value)}
+                      placeholder="10 أحرف على الأقل"
+                      required
+                      minLength={10}
+                    />
+                  </span>
+                </label>
+                {authError && (
+                  <p className="auth-error" role="alert">
+                    {authError}
+                  </p>
+                )}
+                <button
+                  className="auth-submit"
+                  type="submit"
+                  disabled={authBusy}
+                >
+                  {authBusy
+                    ? "لحظة..."
+                    : authMode === "login"
+                      ? "دخول"
+                      : "إنشاء الحساب"}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
               <button
-                className="icon-button"
-                onClick={() => setShowUsers(false)}
-                aria-label="إغلاق"
+                className="auth-switch"
+                type="button"
+                onClick={() => {
+                  setAuthMode(authMode === "login" ? "register" : "login");
+                  setAuthError("");
+                }}
               >
-                <X size={21} />
+                {authMode === "login"
+                  ? "ما عندك حساب؟ أنشئ حساب جديد"
+                  : "عندك حساب؟ سجّل دخولك"}
               </button>
-            </header>
-
-            <label className="search-box modal-search">
-              <Search size={18} />
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="ابحث بالاسم أو اسم المستخدم..."
-              />
-            </label>
-
-            <div className="users-list">
-              {filteredUsers.length ? (
-                filteredUsers.map((user) => (
-                  <button
-                    className="user-option"
-                    key={user.id}
-                    onClick={() => openChat(user)}
-                  >
-                    <Avatar user={user} />
-                    <div className="user-option-info">
-                      <strong>{user.name}</strong>
-                      <span>@{user.username}</span>
-                    </div>
-                    <span className="user-message-action">مراسلة</span>
-                  </button>
-                ))
-              ) : (
-                <div className="no-users">
-                  <Search size={26} />
-                  <p>ما لكينا حساب بهذا الاسم.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-footer">
-              الحسابات المعروضة تجريبية حالياً
-            </div>
-          </section>
+              <p className="auth-local-note">
+                حسابك وجلسة الدخول محميان عبر الخادم.
+              </p>
+            </section>
+          )}
         </div>
       )}
 
-    </main>
+      <main className="app-shell" dir="rtl">
+        <header className="topbar">
+          <div className="brand">
+            <div className="brand-icon">
+              <MessageCircle size={22} />
+            </div>
+            <div>
+              <h1>
+                habeeb<span>.</span>
+              </h1>
+              <p>مساحتك الخاصة للكلام</p>
+            </div>
+          </div>
+
+          <div className="profile">
+            <Avatar user={currentUser} size={39} />
+            <div className="profile-info">
+              <strong>{currentUser.name}</strong>
+              <span>@{currentUser.username}</span>
+            </div>
+            <button
+              className="icon-button"
+              onClick={signOut}
+              aria-label="تسجيل الخروج"
+              title="تسجيل الخروج"
+            >
+              <LogOut size={19} />
+            </button>
+          </div>
+        </header>
+
+        <section className="workspace">
+          <aside className={`sidebar ${mobileChat ? "mobile-hidden" : ""}`}>
+            <div className="sidebar-heading">
+              <div>
+                <h2>رسائلك</h2>
+                <p>مكان يجمع أحاديثك</p>
+              </div>
+              <button
+                className="new-chat-button"
+                onClick={() => setShowUsers(true)}
+                aria-label="ابدأ محادثة جديدة"
+                title="محادثة جديدة"
+              >
+                <Plus size={21} />
+              </button>
+            </div>
+
+            <button className="start-chat" onClick={() => setShowUsers(true)}>
+              <Users size={18} />
+              <span>ابدأ محادثة مع...</span>
+              <ArrowRight className="start-arrow" size={17} />
+            </button>
+
+            <label className="search-box">
+              <Search size={18} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="ابحث عن محادثة..."
+                aria-label="البحث عن محادثة"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  aria-label="مسح البحث"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </label>
+
+            <div className="list-label">المحادثات الأخيرة</div>
+
+            <div className="conversation-list">
+              {users
+                .filter((user) => {
+                  const last = messages[user.id]?.at(-1)?.text ?? "";
+                  return (
+                    user.name.includes(query) ||
+                    user.username.includes(query.toLowerCase()) ||
+                    last.includes(query)
+                  );
+                })
+                .map((user) => {
+                  const last = messages[user.id]?.at(-1);
+                  return (
+                    <button
+                      key={user.id}
+                      className={`conversation-item ${
+                        selectedId === user.id ? "active" : ""
+                      }`}
+                      onClick={() => openChat(user)}
+                    >
+                      <Avatar user={user} />
+                      <div className="conversation-details">
+                        <div className="conversation-top">
+                          <strong>{user.name}</strong>
+                          <time>{last?.time ?? ""}</time>
+                        </div>
+                        <div className="conversation-bottom">
+                          <span>
+                            {last?.attachmentUrl
+                              ? "📷 صورة مرفقة"
+                              : last?.text ?? "ابدأ المحادثة الآن"}
+                          </span>
+                          {last?.senderId === currentUser.id && (
+                            <CheckCheck size={15} className="read-icon" />
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+
+            <div className="sidebar-footer">
+              <span className="footer-dot" />
+              رسائلك محفوظة بأمان على Neon
+            </div>
+          </aside>
+
+          <section className={`chat-panel ${mobileChat ? "mobile-visible" : ""}`}>
+            {selectedUser ? (
+              <>
+                <header className="chat-header">
+                  <button
+                    className="icon-button back-button"
+                    onClick={() => setMobileChat(false)}
+                    aria-label="العودة للمحادثات"
+                  >
+                    <ArrowRight size={21} />
+                  </button>
+                  <Avatar user={selectedUser} size={43} />
+                  <div className="chat-person">
+                    <strong>{selectedUser.name}</strong>
+                    <span>
+                      <i
+                        className={
+                          selectedUser.online
+                            ? "status-online"
+                            : "status-offline"
+                        }
+                      />
+                      {selectedUser.online ? "متصل الآن" : "غير متصل"}
+                    </span>
+                  </div>
+                  <div className="chat-actions">
+                    <button className="icon-button" aria-label="خيارات المحادثة">
+                      <MoreVertical size={21} />
+                    </button>
+                  </div>
+                </header>
+
+                <div className="messages-area">
+                  <div className="date-divider">
+                    <span>بداية المحادثة</span>
+                  </div>
+
+                  <div className="messages">
+                    {(messages[selectedUser.id] ?? []).map((message) => {
+                      const mine = message.senderId === currentUser.id;
+                      return (
+                        <div
+                          key={message.id}
+                          className={`message-row ${mine ? "mine" : "theirs"}`}
+                        >
+                          <div
+                            className={`message-bubble ${
+                              mine ? "mine-bubble" : ""
+                            }`}
+                          >
+                            {message.attachmentUrl &&
+                              message.attachmentType?.startsWith("image/") && (
+                                <a
+                                  href={message.attachmentUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="message-image-link"
+                                  aria-label={`فتح الصورة ${
+                                    message.attachmentName ?? "المرفقة"
+                                  }`}
+                                >
+                                  <img
+                                    src={message.attachmentUrl}
+                                    alt={
+                                      message.attachmentName ?? "صورة مرفقة"
+                                    }
+                                    className="message-image"
+                                    loading="lazy"
+                                  />
+                                </a>
+                              )}
+
+                            {message.text && <p>{message.text}</p>}
+
+                            <div className="message-meta">
+                              <time>{message.time}</time>
+                              {mine && <CheckCheck size={14} />}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div ref={messagesEndRef} />
+                    {(messages[selectedUser.id] ?? []).length === 0 && (
+                      <div className="empty-messages">
+                        <div className="empty-icon">
+                          <MessageCircle size={27} />
+                        </div>
+                        <h3>بداية حكاية جديدة</h3>
+                        <p>أرسل أول رسالة إلى {selectedUser.name}.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <footer className="composer-area">
+                  {chatError && (
+                    <p className="chat-error" role="alert">
+                      {chatError}
+                    </p>
+                  )}
+                  {attachmentBusy && (
+                    <p className="upload-status" role="status">
+                      جارٍ رفع الصورة وإرسالها...
+                    </p>
+                  )}
+                  <form
+                    className="composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void sendMessage();
+                    }}
+                  >
+                    <label
+                      className={`attachment-button ${
+                        attachmentBusy ? "is-busy" : ""
+                      }`}
+                      title="إرفاق صورة"
+                    >
+                      <Paperclip size={21} />
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        hidden
+                        disabled={attachmentBusy}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          void handleAttachment(file);
+                        }}
+                      />
+                    </label>
+
+                    <input
+                      className="message-input"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      placeholder="اكتب رسالتك هنا..."
+                      aria-label="نص الرسالة"
+                    />
+
+                    <button
+                      type="button"
+                      className="icon-button emoji-button"
+                      title="الرموز التعبيرية"
+                      onClick={() => setDraft((value) => value + " 😊")}
+                    >
+                      <Smile size={21} />
+                    </button>
+
+                    <button
+                      type="submit"
+                      className="send-button"
+                      disabled={!draft.trim()}
+                      aria-label="إرسال الرسالة"
+                    >
+                      <Send size={19} />
+                    </button>
+                  </form>
+                  <p className="composer-note">مساحة للكلام، بلا تعقيد.</p>
+                </footer>
+              </>
+            ) : (
+              <div className="empty-chat">
+                <MessageCircle size={45} />
+                <h2>ابدأ محادثتك الأولى</h2>
+                <p>اختر شخصاً من القائمة حتى تبدأ المراسلة.</p>
+                <button
+                  className="start-chat"
+                  onClick={() => setShowUsers(true)}
+                >
+                  <Plus size={18} /> ابدأ محادثة
+                </button>
+              </div>
+            )}
+          </section>
+        </section>
+
+        {showUsers && (
+          <div className="modal-overlay" onClick={() => setShowUsers(false)}>
+            <section
+              className="users-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="modal-title"
+            >
+              <header className="modal-header">
+                <div>
+                  <h2 id="modal-title">ابدأ محادثة مع...</h2>
+                  <p>اختار الشخص اللي تريد تحچي وياه</p>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => setShowUsers(false)}
+                  aria-label="إغلاق"
+                >
+                  <X size={21} />
+                </button>
+              </header>
+
+              <label className="search-box modal-search">
+                <Search size={18} />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="ابحث بالاسم أو اسم المستخدم..."
+                />
+              </label>
+
+              <div className="users-list">
+                {filteredUsers.length ? (
+                  filteredUsers.map((user) => (
+                    <button
+                      className="user-option"
+                      key={user.id}
+                      onClick={() => openChat(user)}
+                    >
+                      <Avatar user={user} />
+                      <div className="user-option-info">
+                        <strong>{user.name}</strong>
+                        <span>@{user.username}</span>
+                      </div>
+                      <span className="user-message-action">مراسلة</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="no-users">
+                    <Search size={26} />
+                    <p>ما لكينا حساب بهذا الاسم.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer">
+                الحسابات المعروضة من قاعدة البيانات
+              </div>
+            </section>
+          </div>
+        )}
+      </main>
+
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;450;500;550;600;650;700&display=swap');
 
@@ -798,6 +1131,20 @@ export default function Home() {
           border-radius: 15px 15px 15px 4px;
         }
         .message-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 13px; }
+        .message-image-link {
+          display: block;
+          max-width: min(100%, 320px);
+          margin-bottom: 8px;
+          overflow: hidden;
+          border-radius: 12px;
+        }
+        .message-image {
+          display: block;
+          width: 100%;
+          max-height: 360px;
+          object-fit: contain;
+          border-radius: 12px;
+        }
         .message-meta {
           display: flex; align-items: center; justify-content: flex-end;
           gap: 5px; color: #979083; margin-top: 5px; font-size: 9px;
@@ -824,6 +1171,7 @@ export default function Home() {
           transition: .15s;
         }
         .attachment-button:hover { color: var(--gold); background: #302b20; }
+        .attachment-button.is-busy { opacity: .5; cursor: wait; }
         .message-input {
           flex: 1; width: 0; border: 0; outline: 0;
           background: transparent; color: var(--text); padding: 8px 3px;
@@ -838,6 +1186,15 @@ export default function Home() {
         }
         .send-button:disabled { opacity: .38; cursor: not-allowed; transform: none; }
         .composer-note { text-align: center; color: #696960; font-size: 10px; margin: 10px 0 0; }
+        .chat-error, .upload-status {
+          margin: 0 0 9px;
+          padding: 8px 11px;
+          border-radius: 9px;
+          font-size: 11px;
+          line-height: 1.7;
+        }
+        .chat-error { color: #f19a92; background: #3a211f; }
+        .upload-status { color: var(--gold); background: #302b20; }
         .empty-chat {
           flex: 1; display: flex; flex-direction: column; align-items: center;
           justify-content: center; color: var(--gold); text-align: center; padding: 20px;
@@ -916,6 +1273,8 @@ export default function Home() {
           .chat-header > .avatar { width: 40px !important; height: 40px !important; }
           .messages-area { padding: 20px 14px; }
           .message-bubble { max-width: 88%; }
+          .message-image-link { max-width: min(100%, 280px); }
+          .message-image { max-height: 300px; }
           .composer-area { padding: 11px 10px 9px; }
           .composer { gap: 4px; padding: 6px; }
           .attachment-button { width: 34px; }
