@@ -49,6 +49,58 @@ type ApiMessage = {
   attachmentSize?: number | string | null;
 };
 
+function MessageImage({
+  url,
+  alt,
+  onLoad,
+}: {
+  url: string;
+  alt: string;
+  onLoad: () => void;
+}) {
+  const [source, setSource] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    setSource(null);
+    setFailed(false);
+    fetch(url, { credentials: "same-origin", cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+        return response.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setSource(objectUrl);
+      })
+      .catch((error) => {
+        console.error("تعذّر تحميل صورة الرسالة:", error);
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [url]);
+
+  if (failed) {
+    return <span className="message-image-error">تعذّر تحميل الصورة · اضغط لفتحها</span>;
+  }
+  if (!source) {
+    return <span className="message-image-loading">جار تحميل الصورة…</span>;
+  }
+
+  return <img src={source} alt={alt} className="message-image" onLoad={onLoad} />;
+}
+
 function Avatar({ user, size = 44 }: { user: User; size?: number }) {
   return (
     <div
@@ -86,7 +138,8 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [showUsers, setShowUsers] = useState(false);
   const [mobileChat, setMobileChat] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
   const currentUser: User = {
     id: account?.id ?? "",
     name: account?.username ?? "مستخدم",
@@ -257,10 +310,22 @@ export default function Home() {
           })
         );
 
-        setMessages((previous) => ({
-          ...previous,
-          [selectedId]: conversation,
-        }));
+        setMessages((previous) => {
+          const current = previous[selectedId] ?? [];
+          const unchanged =
+            current.length === conversation.length &&
+            current.every((message, index) => {
+              const next = conversation[index];
+              return (
+                message.id === next.id &&
+                message.text === next.text &&
+                message.attachmentUrl === next.attachmentUrl &&
+                message.attachmentType === next.attachmentType
+              );
+            });
+          if (unchanged) return previous;
+          return { ...previous, [selectedId]: conversation };
+        });
       } catch (error) {
         console.error("تعذّر تحميل الرسائل:", error);
         if (!cancelled) {
@@ -279,10 +344,9 @@ export default function Home() {
   }, [selectedId, account]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "end",
-    });
+    const area = messagesAreaRef.current;
+    if (!area) return;
+    area.scrollTo({ top: area.scrollHeight, behavior: "smooth" });
   }, [selectedId, messages]);
 
   const selectedUser = users.find((user) => user.id === selectedId);
@@ -647,7 +711,15 @@ export default function Home() {
                   </div>
                 </header>
 
-                <div className="messages-area">
+                <div
+                  className="messages-area"
+                  ref={messagesAreaRef}
+                  onScroll={(event) => {
+                    const area = event.currentTarget;
+                    pinnedToBottomRef.current =
+                      area.scrollHeight - area.scrollTop - area.clientHeight < 80;
+                  }}
+                >
                   <div className="date-divider">
                     <span>بداية المحادثة</span>
                   </div>
@@ -676,13 +748,18 @@ export default function Home() {
                                     message.attachmentName ?? "المرفقة"
                                   }`}
                                 >
-                                  <img
-                                    src={message.attachmentUrl}
-                                    alt={
-                                      message.attachmentName ?? "صورة مرفقة"
-                                    }
-                                    className="message-image"
-                                    loading="lazy"
+                                  <MessageImage
+                                    url={message.attachmentUrl}
+                                    alt={message.attachmentName ?? "صورة مرفقة"}
+                                    onLoad={() => {
+                                      const area = messagesAreaRef.current;
+                                      if (area && pinnedToBottomRef.current) {
+                                        area.scrollTo({
+                                          top: area.scrollHeight,
+                                          behavior: "smooth",
+                                        });
+                                      }
+                                    }}
                                   />
                                 </a>
                               )}
@@ -697,7 +774,6 @@ export default function Home() {
                         </div>
                       );
                     })}
-                    <div ref={messagesEndRef} />
                     {(messages[selectedUser.id] ?? []).length === 0 && (
                       <div className="empty-messages">
                         <div className="empty-icon">
@@ -1068,7 +1144,10 @@ export default function Home() {
         }
         .footer-dot { width: 7px; height: 7px; background: #d1a663; border-radius: 50%; }
 
-        .chat-panel { display: flex; flex-direction: column; min-width: 0; background: #181916; }
+        .chat-panel {
+          display: flex; flex-direction: column; min-width: 0; min-height: 0;
+          background: #181916;
+        }
         .chat-header {
           height: 79px; min-height: 79px; padding: 0 25px; gap: 12px;
           border-bottom: 1px solid var(--border);
@@ -1081,17 +1160,22 @@ export default function Home() {
         .status-offline { background: #74746b; }
         .chat-actions { margin-right: auto; gap: 5px; }
         .messages-area {
-          flex: 1; min-height: 0; overflow-y: auto;
+          flex: 1 1 0; min-width: 0; min-height: 0;
+          overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
           padding: 24px clamp(18px, 5%, 65px);
-          scrollbar-width: thin; scrollbar-color: #414139 transparent;
+          scrollbar-width: thin; scrollbar-color: #77776e transparent;
+          scrollbar-gutter: stable;
         }
         .date-divider {
           display: flex; align-items: center; gap: 13px; color: #77776e;
           font-size: 10px; margin: 0 auto 28px; max-width: 290px;
         }
         .date-divider::before, .date-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
-        .messages { display: flex; flex-direction: column; gap: 17px; }
-        .message-row { display: flex; width: 100%; }
+        .messages {
+          display: flex; flex-direction: column; gap: 17px;
+          width: 100%; min-height: max-content;
+        }
+        .message-row { display: flex; flex: 0 0 auto; width: 100%; min-width: 0; }
         .message-row.mine { justify-content: flex-start; }
         .message-row.theirs { justify-content: flex-end; }
         .message-bubble {
@@ -1105,19 +1189,19 @@ export default function Home() {
         }
         .message-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 13px; }
         .message-image-link {
-          display: block;
-          max-width: min(100%, 320px);
-          margin-bottom: 8px;
-          overflow: hidden;
-          border-radius: 12px;
+          display: block; width: fit-content; max-width: min(100%, 320px);
+          margin-bottom: 8px; overflow: hidden; border-radius: 12px;
         }
         .message-image {
-          display: block;
-          width: 100%;
-          max-height: 360px;
-          object-fit: contain;
+          display: block; width: auto; max-width: 100%;
+          max-height: min(65vh, 460px); object-fit: contain;
           border-radius: 12px;
         }
+        .message-image-error, .message-image-loading {
+          display: block; padding: 20px 12px; color: #c7b98f;
+          background: #302b20; border-radius: 10px; font-size: 11px;
+        }
+        .message-image-error { color: #e6b2a7; background: #34211e; }
         .message-meta {
           display: flex; align-items: center; justify-content: flex-end;
           gap: 5px; color: #979083; margin-top: 5px; font-size: 9px;
@@ -1250,15 +1334,15 @@ export default function Home() {
           }
           .sidebar { padding: 20px 14px 12px; border: 0; }
           .sidebar.mobile-hidden { display: none; }
-          .chat-panel { display: none; }
+          .chat-panel { display: none; min-height: 0; }
           .chat-panel.mobile-visible { display: flex; }
           .chat-header { padding: 0 12px; gap: 10px; height: 69px; min-height: 69px; }
           .back-button { display: grid; }
           .chat-header > .avatar { width: 40px !important; height: 40px !important; }
           .messages-area { padding: 20px 14px; }
-          .message-bubble { max-width: 88%; }
+          .message-bubble { max-width: 88%; min-width: 0; }
           .message-image-link { max-width: min(100%, 280px); }
-          .message-image { max-height: 300px; }
+          .message-image { max-height: min(55dvh, 360px); }
           .composer-area { padding: 11px 10px 9px; }
           .composer { gap: 4px; padding: 6px; }
           .attachment-button { width: 34px; }
