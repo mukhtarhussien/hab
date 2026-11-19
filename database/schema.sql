@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS messages (
   conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
   sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   recipient_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  body TEXT NOT NULL CHECK (char_length(body) <= 10000),
+  body TEXT NOT NULL DEFAULT '',
   attachment_url TEXT,
   attachment_type TEXT,
   attachment_name TEXT,
@@ -44,6 +44,11 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT;
+ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_body_check;
+ALTER TABLE messages ADD CONSTRAINT messages_body_check CHECK (
+  char_length(body) <= 10000 AND
+  (char_length(body) >= 1 OR attachment_url IS NOT NULL OR attachment_data IS NOT NULL)
+);
 
 UPDATE messages m
 SET recipient_id = CASE

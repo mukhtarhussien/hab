@@ -61,6 +61,13 @@ async function initializeSchema() {
 
   await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT`;
 
+  await sql`ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_body_check`;
+
+  await sql`ALTER TABLE messages ADD CONSTRAINT messages_body_check CHECK (
+    char_length(body) <= 10000 AND
+    (char_length(body) >= 1 OR attachment_url IS NOT NULL OR attachment_data IS NOT NULL)
+  )`;
+
   await sql`UPDATE messages m SET recipient_id = CASE
       WHEN m.sender_id = c.user_one_id THEN c.user_two_id
       ELSE c.user_one_id
