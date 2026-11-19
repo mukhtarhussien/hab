@@ -59,6 +59,8 @@ async function initializeSchema() {
 
   await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT`;
 
+  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT`;
+
   await sql`UPDATE messages m SET recipient_id = CASE
       WHEN m.sender_id = c.user_one_id THEN c.user_two_id
       ELSE c.user_one_id

@@ -49,14 +49,6 @@ type ApiMessage = {
   attachmentSize?: number | string | null;
 };
 
-type UploadResponse = {
-  url?: string;
-  contentType?: string;
-  name?: string;
-  size?: number;
-  error?: string;
-};
-
 function Avatar({ user, size = 44 }: { user: User; size?: number }) {
   return (
     <div
@@ -86,6 +78,8 @@ export default function Home() {
   const [chatError, setChatError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [draft, setDraft] = useState("");
@@ -269,6 +263,9 @@ export default function Home() {
         }));
       } catch (error) {
         console.error("تعذّر تحميل الرسائل:", error);
+        if (!cancelled) {
+          setChatError("تعذّر تحميل الرسائل من قاعدة البيانات.");
+        }
       }
     };
 
@@ -308,22 +305,35 @@ export default function Home() {
     setChatError("");
   }
 
-  async function sendTextMessage(text: string) {
-    const cleanText = text.trim();
+  async function sendMessage() {
+    const text = draft.trim();
+    const image = selectedImage;
     const recipientId = selectedId;
-    if (!cleanText || !recipientId) return;
+    if ((!text && !image) || !recipientId || attachmentBusy) return;
+
+    setAttachmentBusy(Boolean(image));
+    setChatError("");
 
     try {
-      const response = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recipientId, text: cleanText }),
-      });
+      let response: Response;
+      if (image) {
+        const formData = new FormData();
+        formData.append("recipientId", recipientId);
+        formData.append("text", text);
+        formData.append("file", image);
+        response = await fetch("/api/messages", { method: "POST", body: formData });
+      } else {
+        response = await fetch("/api/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ recipientId, text }),
+        });
+      }
+
       const result = (await response.json()) as {
         message?: ApiMessage;
         error?: string;
       };
-
       if (!response.ok || !result.message) {
         setChatError(result.error ?? "تعذّر إرسال الرسالة.");
         return;
@@ -333,7 +343,7 @@ export default function Home() {
       const saved: Message = {
         id: message.id,
         senderId: message.senderId,
-        text: message.text ?? cleanText,
+        text: message.text ?? text,
         attachmentUrl: message.attachmentUrl,
         attachmentType: message.attachmentType,
         attachmentName: message.attachmentName,
@@ -343,28 +353,23 @@ export default function Home() {
         }),
       };
 
-      setChatError("");
       setMessages((previous) => ({
         ...previous,
         [recipientId]: [...(previous[recipientId] ?? []), saved],
       }));
+      setDraft("");
+      setSelectedImage(null);
+      setImagePreviewUrl(null);
     } catch (error) {
       console.error("تعذّر إرسال الرسالة:", error);
       setChatError("تعذّر الاتصال بالخادم لإرسال الرسالة.");
+    } finally {
+      setAttachmentBusy(false);
     }
   }
 
-  async function sendMessage() {
-    const text = draft.trim();
-    if (!text || !selectedId) return;
-    await sendTextMessage(text);
-    setDraft("");
-  }
-
-  async function handleAttachment(file?: File) {
-    if (!file || !selectedId || attachmentBusy) return;
-
-    const recipientId = selectedId;
+  function handleAttachment(file?: File) {
+    if (!file) return;
     const allowedTypes = new Set([
       "image/jpeg",
       "image/png",
@@ -376,80 +381,21 @@ export default function Home() {
       setChatError("اختر صورة JPG أو PNG أو WebP أو GIF.");
       return;
     }
-
     if (file.size === 0 || file.size > 5 * 1024 * 1024) {
       setChatError("الحد الأقصى لحجم الصورة هو 5 MB.");
       return;
     }
 
-    setAttachmentBusy(true);
     setChatError("");
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const uploadResponse = await fetch("/api/uploads", {
-        method: "POST",
-        body: formData,
-      });
-      const uploaded = (await uploadResponse.json()) as UploadResponse;
-
-      if (!uploadResponse.ok || !uploaded.url) {
-        setChatError(uploaded.error ?? "فشل رفع الصورة.");
-        return;
+    setImagePreviewUrl(null);
+    setSelectedImage(file);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setImagePreviewUrl(reader.result);
       }
-
-      const response = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipientId,
-          text: "",
-          attachmentUrl: uploaded.url,
-          attachmentType: uploaded.contentType ?? file.type,
-          attachmentName: uploaded.name ?? file.name,
-          attachmentSize: uploaded.size ?? file.size,
-        }),
-      });
-
-      const result = (await response.json()) as {
-        message?: ApiMessage;
-        error?: string;
-      };
-
-      if (!response.ok || !result.message) {
-        setChatError(result.error ?? "تم رفع الصورة لكن تعذّر إرسالها.");
-        return;
-      }
-
-      const message = result.message;
-      const saved: Message = {
-        id: message.id,
-        senderId: message.senderId,
-        text: message.text ?? "",
-        attachmentUrl: message.attachmentUrl ?? uploaded.url,
-        attachmentType:
-          message.attachmentType ?? uploaded.contentType ?? file.type,
-        attachmentName:
-          message.attachmentName ?? uploaded.name ?? file.name,
-        time: new Date(message.createdAt).toLocaleTimeString("ar-IQ", {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      };
-
-      setMessages((previous) => ({
-        ...previous,
-        [recipientId]: [...(previous[recipientId] ?? []), saved],
-      }));
-      setChatError("");
-    } catch (error) {
-      console.error("فشل رفع الصورة أو إرسالها:", error);
-      setChatError("تعذّر رفع الصورة أو إرسالها. حاول مرة ثانية.");
-    } finally {
-      setAttachmentBusy(false);
-    }
+    };
+    reader.readAsDataURL(file);
   }
 
   return (
@@ -770,9 +716,33 @@ export default function Home() {
                       {chatError}
                     </p>
                   )}
+                  {imagePreviewUrl && selectedImage && (
+                    <div className="image-preview" role="status">
+                      <img
+                        src={imagePreviewUrl}
+                        alt="معاينة الصورة قبل الإرسال"
+                      />
+                      <div className="image-preview-info">
+                        <strong>{selectedImage.name}</strong>
+                        <span>معاينة الصورة</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => {
+                          setSelectedImage(null);
+                          setImagePreviewUrl(null);
+                        }}
+                        aria-label="إزالة الصورة"
+                        disabled={attachmentBusy}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                  )}
                   {attachmentBusy && (
                     <p className="upload-status" role="status">
-                      جارٍ رفع الصورة وإرسالها...
+                      جارٍ إرسال الرسالة والصورة...
                     </p>
                   )}
                   <form
@@ -787,6 +757,7 @@ export default function Home() {
                         attachmentBusy ? "is-busy" : ""
                       }`}
                       title="إرفاق صورة"
+                      aria-label="إرفاق صورة"
                     >
                       <Paperclip size={21} />
                       <input
@@ -822,7 +793,9 @@ export default function Home() {
                     <button
                       type="submit"
                       className="send-button"
-                      disabled={!draft.trim()}
+                      disabled={
+                        (!draft.trim() && !selectedImage) || attachmentBusy
+                      }
                       aria-label="إرسال الرسالة"
                     >
                       <Send size={19} />
@@ -1186,6 +1159,17 @@ export default function Home() {
         }
         .send-button:disabled { opacity: .38; cursor: not-allowed; transform: none; }
         .composer-note { text-align: center; color: #696960; font-size: 10px; margin: 10px 0 0; }
+        .image-preview {
+          display: flex; align-items: center; gap: 11px; margin: 0 0 10px;
+          padding: 9px; border: 1px solid #49402e; border-radius: 12px;
+          background: #24221b;
+        }
+        .image-preview img {
+          width: 58px; height: 58px; object-fit: cover; border-radius: 8px;
+        }
+        .image-preview-info { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+        .image-preview-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+        .image-preview-info span { color: var(--muted); font-size: 10px; }
         .chat-error, .upload-status {
           margin: 0 0 9px;
           padding: 8px 11px;

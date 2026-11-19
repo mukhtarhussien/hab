@@ -11,7 +11,7 @@ Arabic RTL chat interface with Neon Postgres-backed accounts and sessions.
 5. Open `/api/db-test` to check the Neon connection and create the required tables.
 6. Create an account from the sign-in screen.
 
-The app creates the `users`, `sessions`, and `messages` tables with idempotent queries in `src/lib/db.ts`; `database/schema.sql` is also provided for manual setup. Passwords are hashed on the server with scrypt. Session tokens are random, stored as hashes in Postgres, and sent in HttpOnly cookies.
+The app creates the `users`, `sessions`, and `messages` tables with idempotent queries in `src/lib/db.ts`; `database/schema.sql` is also provided for manual setup. Messages and image attachments (up to 5 MB) are stored in Neon Postgres. Passwords are hashed on the server with scrypt. Session tokens are random, stored as hashes in Postgres, and sent in HttpOnly cookies.
 
 ## Deployment
 
