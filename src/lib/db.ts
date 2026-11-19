@@ -1,4 +1,3 @@
-
 import { neon } from "@neondatabase/serverless";
 
 export function getSql() {
@@ -46,27 +45,45 @@ async function initializeSchema() {
   )`;
 
   await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id UUID REFERENCES users(id) ON DELETE CASCADE`;
-
   await sql`ALTER TABLE messages ALTER COLUMN conversation_id DROP NOT NULL`;
-
   await sql`ALTER TABLE messages ALTER COLUMN body SET DEFAULT ''`;
 
-  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT`;
-
-  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT`;
-
-  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT`;
-
-  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT`;
-
-  await sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data TEXT`;
-
-  await sql`ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_body_check`;
-
-  await sql`ALTER TABLE messages ADD CONSTRAINT messages_body_check CHECK (
-    char_length(body) <= 10000 AND
-    (char_length(body) >= 1 OR attachment_url IS NOT NULL OR attachment_data IS NOT NULL)
+  await sql`CREATE TABLE IF NOT EXISTS message_images (
+    message_id UUID PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    image_data BYTEA NOT NULL,
+    mime_type TEXT NOT NULL,
+    file_name TEXT,
+    file_size BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
+
+  const legacyImageColumns = await sql`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'messages'
+        AND column_name = 'attachment_data'
+    ) AS present
+  `;
+
+  if (legacyImageColumns[0]?.present) {
+    await sql`ALTER TABLE messages DROP CONSTRAINT IF EXISTS messages_body_check`;
+    await sql`ALTER TABLE messages ADD CONSTRAINT messages_body_check CHECK (char_length(body) <= 10000)`;
+    await sql`INSERT INTO message_images (message_id, image_data, mime_type, file_name, file_size)
+      SELECT id, decode(attachment_data, 'base64'),
+        COALESCE(attachment_type, 'application/octet-stream'),
+        attachment_name,
+        COALESCE(attachment_size, octet_length(decode(attachment_data, 'base64')))
+      FROM messages
+      WHERE attachment_data IS NOT NULL
+      ON CONFLICT (message_id) DO NOTHING`;
+    await sql`ALTER TABLE messages
+      DROP COLUMN IF EXISTS attachment_data,
+      DROP COLUMN IF EXISTS attachment_type,
+      DROP COLUMN IF EXISTS attachment_name,
+      DROP COLUMN IF EXISTS attachment_size,
+      DROP COLUMN IF EXISTS attachment_url`;
+  }
 
   await sql`UPDATE messages m SET recipient_id = CASE
       WHEN m.sender_id = c.user_one_id THEN c.user_two_id

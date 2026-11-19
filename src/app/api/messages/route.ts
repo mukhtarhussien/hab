@@ -35,11 +35,11 @@ export async function GET(request: Request) {
       }
 
       const images = await getSql()`
-        SELECT attachment_data AS data, attachment_type AS type
-        FROM messages
-        WHERE id = ${imageId}
-          AND attachment_data IS NOT NULL
-          AND (sender_id = ${user.id} OR recipient_id = ${user.id})
+        SELECT encode(image.image_data, 'base64') AS data, image.mime_type AS type
+        FROM message_images AS image
+        JOIN messages AS message ON message.id = image.message_id
+        WHERE message.id = ${imageId}
+          AND (message.sender_id = ${user.id} OR message.recipient_id = ${user.id})
         LIMIT 1
       `;
       const image = images[0];
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
       return new Response(Buffer.from(String(image.data), "base64"), {
         headers: {
           "Content-Type": String(image.type),
-          "Cache-Control": "private, max-age=3600",
+          "Cache-Control": "private, no-store",
           "X-Content-Type-Options": "nosniff",
         },
       });
@@ -63,19 +63,20 @@ export async function GET(request: Request) {
 
     const messages = await getSql()`
       SELECT
-        id::text AS id,
-        sender_id::text AS "senderId",
-        recipient_id::text AS "recipientId",
-        body AS text,
-        CASE WHEN attachment_data IS NOT NULL
-          THEN '/api/messages?image=' || id::text
-          ELSE attachment_url
+        messages.id::text AS id,
+        messages.sender_id::text AS "senderId",
+        messages.recipient_id::text AS "recipientId",
+        messages.body AS text,
+        CASE WHEN image.message_id IS NOT NULL
+          THEN '/api/messages?image=' || messages.id::text
+          ELSE NULL
         END AS "attachmentUrl",
-        attachment_type AS "attachmentType",
-        attachment_name AS "attachmentName",
-        attachment_size AS "attachmentSize",
-        created_at AS "createdAt"
+        image.mime_type AS "attachmentType",
+        image.file_name AS "attachmentName",
+        image.file_size AS "attachmentSize",
+        messages.created_at AS "createdAt"
       FROM messages
+      LEFT JOIN message_images AS image ON image.message_id = messages.id
       WHERE
         (sender_id = ${user.id} AND recipient_id = ${recipientId})
         OR
@@ -141,40 +142,50 @@ export async function POST(request: Request) {
 
     await ensureSchema();
     const rows = await getSql()`
-      INSERT INTO messages (
-        sender_id,
-        recipient_id,
-        body,
-        attachment_url,
-        attachment_type,
-        attachment_name,
-        attachment_size,
-        attachment_data
+      WITH new_message AS (
+        INSERT INTO messages (sender_id, recipient_id, body)
+        SELECT ${user.id}, id, ${text}
+        FROM users
+        WHERE id = ${recipientId}
+        RETURNING
+          id,
+          sender_id,
+          recipient_id,
+          body,
+          created_at
+      ), new_image AS (
+        INSERT INTO message_images (
+          message_id,
+          image_data,
+          mime_type,
+          file_name,
+          file_size
+        )
+        SELECT
+          id,
+          decode(${attachmentData}, 'base64'),
+          ${attachmentType},
+          ${attachmentName},
+          ${attachmentSize}
+        FROM new_message
+        WHERE ${Boolean(image)}
+        RETURNING message_id
       )
       SELECT
-        ${user.id},
-        id,
-        ${text},
-        ${null},
-        ${attachmentType},
-        ${attachmentName},
-        ${attachmentSize},
-        ${attachmentData}
-      FROM users
-      WHERE id = ${recipientId}
-      RETURNING
-        id::text AS id,
-        sender_id::text AS "senderId",
-        recipient_id::text AS "recipientId",
-        body AS text,
-        CASE WHEN attachment_data IS NOT NULL
-          THEN '/api/messages?image=' || id::text
-          ELSE attachment_url
+        message.id::text AS id,
+        message.sender_id::text AS "senderId",
+        message.recipient_id::text AS "recipientId",
+        message.body AS text,
+        CASE WHEN image.message_id IS NOT NULL
+          THEN '/api/messages?image=' || message.id::text
+          ELSE NULL
         END AS "attachmentUrl",
-        attachment_type AS "attachmentType",
-        attachment_name AS "attachmentName",
-        attachment_size AS "attachmentSize",
-        created_at AS "createdAt"
+        CASE WHEN image.message_id IS NOT NULL THEN ${attachmentType} ELSE NULL END AS "attachmentType",
+        CASE WHEN image.message_id IS NOT NULL THEN ${attachmentName} ELSE NULL END AS "attachmentName",
+        CASE WHEN image.message_id IS NOT NULL THEN ${attachmentSize} ELSE NULL END AS "attachmentSize",
+        message.created_at AS "createdAt"
+      FROM new_message AS message
+      LEFT JOIN new_image AS image ON image.message_id = message.id
     `;
 
     if (!rows[0]) {
