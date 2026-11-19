@@ -81,7 +81,7 @@ export async function GET(request: Request) {
         (sender_id = ${user.id} AND recipient_id = ${recipientId})
         OR
         (sender_id = ${recipientId} AND recipient_id = ${user.id})
-      ORDER BY created_at ASC, id ASC
+      ORDER BY messages.created_at ASC, messages.id ASC
     `;
 
     return NextResponse.json({ messages });
